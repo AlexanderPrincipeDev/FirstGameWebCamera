@@ -12,13 +12,21 @@ const levelElement = document.getElementById('level');
 let isGameRunning = false;
 let score = 0;
 let level = 1;
+let lives = 3;
 let targets = [];
 let particles = [];
+let powerups = [];
 let handLandmarks = null;
 let lastShotTime = 0;
-const SHOT_COOLDOWN = 500; // ms
+let screenShake = 0;
+const SHOT_COOLDOWN = 300;
 
-// Audio effects (using simple oscillator for now, or placeholders)
+// Smoothing variables
+let smoothedX = 0;
+let smoothedY = 0;
+const SMOOTHING_FACTOR = 0.2; // Lower = smoother but more lag (0.1 - 0.3 is good)
+
+// Audio effects
 const AudioContext = window.AudioContext || window.webkitAudioContext;
 const audioCtx = new AudioContext();
 
@@ -28,10 +36,10 @@ function playSound(type) {
     }
     const oscillator = audioCtx.createOscillator();
     const gainNode = audioCtx.createGain();
-    
+
     oscillator.connect(gainNode);
     gainNode.connect(audioCtx.destination);
-    
+
     if (type === 'shoot') {
         oscillator.type = 'square';
         oscillator.frequency.setValueAtTime(400, audioCtx.currentTime);
@@ -63,24 +71,53 @@ resizeCanvas();
 class Target {
     constructor() {
         this.radius = 30 + Math.random() * 20;
-        this.y = Math.random() * (canvasElement.height - 200) + 100;
+        this.y = Math.random() * (canvasElement.height - 300) + 100;
         this.speed = (2 + Math.random() * 2 + (level * 0.5));
         this.direction = Math.random() > 0.5 ? 1 : -1;
         this.x = this.direction === 1 ? -this.radius : canvasElement.width + this.radius;
-        this.color = `hsl(${Math.random() * 360}, 70%, 50%)`;
         this.markedForDeletion = false;
-        this.type = Math.random() > 0.8 ? 'bonus' : 'normal'; // 20% chance for bonus
+
+        // Enemy Types
+        const rand = Math.random();
+        if (rand < 0.1 && level > 2) this.type = 'fast';
+        else if (rand < 0.2 && level > 1) this.type = 'zigzag';
+        else if (rand < 0.3 && level > 3) this.type = 'diver';
+        else this.type = 'normal';
+
+        this.color = this.getTypeColor();
+        this.angle = 0; // For zigzag/diver
+    }
+
+    getTypeColor() {
+        switch (this.type) {
+            case 'fast': return '#FF4081'; // Pink
+            case 'zigzag': return '#7C4DFF'; // Purple
+            case 'diver': return '#536DFE'; // Blue
+            default: return `hsl(${Math.random() * 60 + 30}, 100%, 50%)`; // Yellow/Orange
+        }
     }
 
     update() {
         this.x += this.speed * this.direction;
-        
-        // Sine wave movement
-        this.y += Math.sin(this.x / 100) * 2;
+        this.angle += 0.05;
 
-        if ((this.direction === 1 && this.x > canvasElement.width + this.radius) || 
+        // Type specific movement
+        if (this.type === 'normal') {
+            this.y += Math.sin(this.x / 100) * 2;
+        } else if (this.type === 'zigzag') {
+            this.y += Math.sin(this.angle * 5) * 5;
+        } else if (this.type === 'diver') {
+            if (Math.abs(this.x - canvasElement.width / 2) < 200) {
+                this.y += 3; // Dive down in middle
+            }
+        } else if (this.type === 'fast') {
+            this.x += (this.speed * 0.5) * this.direction; // Extra speed
+        }
+
+        if ((this.direction === 1 && this.x > canvasElement.width + this.radius) ||
             (this.direction === -1 && this.x < -this.radius)) {
             this.markedForDeletion = true;
+            loseLife();
         }
     }
 
@@ -89,8 +126,8 @@ class Target {
         canvasCtx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
         canvasCtx.fillStyle = this.color;
         canvasCtx.fill();
-        
-        // Eye (to make it look like a bird/duck face)
+
+        // Simple Eye
         canvasCtx.fillStyle = 'white';
         canvasCtx.beginPath();
         canvasCtx.arc(this.x + (10 * this.direction), this.y - 10, 8, 0, Math.PI * 2);
@@ -99,14 +136,33 @@ class Target {
         canvasCtx.beginPath();
         canvasCtx.arc(this.x + (12 * this.direction), this.y - 10, 3, 0, Math.PI * 2);
         canvasCtx.fill();
-        
-        // Beak
-        canvasCtx.fillStyle = 'orange';
+    }
+}
+
+class PowerUp {
+    constructor() {
+        this.x = Math.random() * (canvasElement.width - 100) + 50;
+        this.y = canvasElement.height + 50;
+        this.radius = 25;
+        this.speedY = -2;
+        this.type = 'nuke'; // Extendable
+        this.markedForDeletion = false;
+        this.color = '#00E676'; // Green
+    }
+
+    update() {
+        this.y += this.speedY;
+        if (this.y < -50) this.markedForDeletion = true;
+    }
+
+    draw() {
         canvasCtx.beginPath();
-        canvasCtx.moveTo(this.x + (20 * this.direction), this.y - 5);
-        canvasCtx.lineTo(this.x + (35 * this.direction), this.y);
-        canvasCtx.lineTo(this.x + (20 * this.direction), this.y + 5);
+        canvasCtx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+        canvasCtx.fillStyle = this.color;
         canvasCtx.fill();
+        canvasCtx.fillStyle = 'white';
+        canvasCtx.font = '20px Arial';
+        canvasCtx.fillText("💣", this.x - 10, this.y + 7);
     }
 }
 
@@ -137,9 +193,11 @@ class Particle {
 }
 
 // MediaPipe Setup
-const hands = new Hands({locateFile: (file) => {
-    return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
-}});
+const hands = new Hands({
+    locateFile: (file) => {
+        return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+    }
+});
 
 hands.setOptions({
     maxNumHands: 1,
@@ -152,7 +210,7 @@ hands.onResults(onResults);
 
 const camera = new Camera(videoElement, {
     onFrame: async () => {
-        await hands.send({image: videoElement});
+        await hands.send({ image: videoElement });
     },
     width: 1280,
     height: 720
@@ -160,83 +218,161 @@ const camera = new Camera(videoElement, {
 
 function onResults(results) {
     if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-       handLandmarks = results.multiHandLandmarks[0];
+        handLandmarks = results.multiHandLandmarks[0];
     } else {
         handLandmarks = null;
     }
 }
 
-function detectShot(landmarks) {
-    // Landmark 4 is thumb tip, 8 is index tip
-    const thumbTip = landmarks[4];
-    const indexPip = landmarks[6]; // Second joint of index finger
-    
-    // Distance between thumb tip and index PIP
-    const distance = Math.sqrt(
-        Math.pow(thumbTip.x - indexPip.x, 2) + 
-        Math.pow(thumbTip.y - indexPip.y, 2)
-    );
-    
-    // Threshold for "pinch" or "trigger"
-    if (distance < 0.05) { // Needs tuning based on normalized coordinates
-        const currentTime = Date.now();
-        if (currentTime - lastShotTime > SHOT_COOLDOWN) {
-            shoot(landmarks);
-            lastShotTime = currentTime;
-        }
-        return true;
-    }
-    return false;
+// Helper: Linear Interpolation
+function lerp(start, end, amt) {
+    return (1 - amt) * start + amt * end;
 }
 
-function shoot(landmarks) {
+// Helper: Calculate distance between two landmarks
+function dist(p1, p2) {
+    return Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2));
+}
+
+function processInput(landmarks) {
+    // 1. Update Cursor Position with Smoothing
+    // Target is Index Finger Tip (8)
+    const rawX = landmarks[8].x * canvasElement.width;
+    const rawY = landmarks[8].y * canvasElement.height;
+
+    // Initialize if first frame
+    if (smoothedX === 0 && smoothedY === 0) {
+        smoothedX = rawX;
+        smoothedY = rawY;
+    }
+
+    smoothedX = lerp(smoothedX, rawX, SMOOTHING_FACTOR);
+    smoothedY = lerp(smoothedY, rawY, SMOOTHING_FACTOR);
+
+    // 2. Detect Shot
+    if (isPistolPose(landmarks)) {
+        if (detectTrigger(landmarks)) {
+            const currentTime = Date.now();
+            if (currentTime - lastShotTime > SHOT_COOLDOWN) {
+                shoot(smoothedX, smoothedY);
+                lastShotTime = currentTime;
+            }
+        }
+    }
+}
+
+function isPistolPose(landmarks) {
+    // Check if Middle(12), Ring(16), Pinky(20) are curbed.
+    // Tip y > PIP y (since y increases downwards, but depends on hand orientation).
+    // Better check: Distance from Tip to Wrist(0) < Distance from PIP to Wrist(0)
+
+    // Wrist
+    const wrist = landmarks[0];
+
+    function isCurled(tipIdx, pipIdx) {
+        return dist(landmarks[tipIdx], wrist) < dist(landmarks[pipIdx], wrist);
+    }
+
+    // Index should be extended
+    const indexExtended = !isCurled(8, 6);
+
+    // Middle, Ring, Pinky should be curled
+    const middleCurled = isCurled(12, 10);
+    const ringCurled = isCurled(16, 14);
+    const pinkyCurled = isCurled(20, 18);
+
+    return indexExtended && middleCurled && ringCurled && pinkyCurled;
+}
+
+function detectTrigger(landmarks) {
+    // Thumb Tip (4) distance to Index PIP (6) or Middle PIP (10)
+    // When trigger is pulled, Thumb Tip moves closer to Index base/side
+    const thumbTip = landmarks[4];
+    const indexMCP = landmarks[5]; // Knuckle
+    const indexPIP = landmarks[6];
+
+    // Check distance between thumb tip and index PIP
+    const triggerDist = dist(thumbTip, indexPIP);
+
+    // Threshold needs tuning. 
+    // Open hand: ~0.15 (normalized). Closed trigger: ~0.05
+    return triggerDist < 0.06;
+}
+
+// Helper Functions
+function loseLife() {
+    lives--;
+    updateLivesDisplay();
+    playSound('hit'); // reused
+    if (lives <= 0) {
+        gameOver();
+    }
+}
+
+function updateLivesDisplay() {
+    // We can add a lives element to HTML or draw it. Drawing is easier for now or append to score
+    document.getElementById('score-board').innerHTML = `Puntos: ${score} <br> ❤️ ${lives}`;
+}
+
+function nukeScreen() {
+    targets.forEach(t => {
+        score += 5;
+        // Create explosion
+        for (let j = 0; j < 10; j++) {
+            particles.push(new Particle(t.x, t.y, t.color));
+        }
+    });
+    targets = [];
+    scoreElement.innerText = score;
+    updateLivesDisplay();
+    playSound('hit');
+
+    // Intense shake
+    screenShake = 20;
+}
+
+function shoot(x, y) {
     playSound('shoot');
-    
-    // Calculate cursor position (Index Tip)
-    // Note: mirror transformation is handled in CSS/Canvas scaling context usually, 
-    // but here landmarks are normalized 0-1. 
-    // Since we CSS transform scaleX(-1) the canvas, visual x=0 is left. 
-    // Landmarks x=0 is left of camera image. 
-    // If user's right hand moves right (in real world), it moves left in camera frame (x approaches 0).
-    // On mirrored canvas (flipped X), x=0 (left) should correspond to camera x=1 (right).
-    // Let's simplify: With scaleX(-1) on canvas, drawing at x=100 draws at width-100 visually.
-    // It's often easier to flip coordinate here and use normal canvas.
-    
-    // Actually, simplest way with MediaPipe selfie mode logic:
-    // x = 1 - landmarks[8].x (if we weren't flipping canvas with CSS)
-    // But since we flip canvas with CSS, we draw normally? 
-    // Let's try drawing at (landmarks[8].x * width, landmarks[8].y * height).
-    // If CSS flips it, then x=0.1 (left side of camera) becomes right side of screen. That's correct for mirror.
-    
-    const cursorX = landmarks[8].x * canvasElement.width;
-    const cursorY = landmarks[8].y * canvasElement.height;
-    
+
     // Visual flash
     canvasCtx.fillStyle = 'rgba(255, 255, 0, 0.5)';
     canvasCtx.beginPath();
-    canvasCtx.arc(cursorX, cursorY, 20, 0, Math.PI * 2);
+    canvasCtx.arc(x, y, 20, 0, Math.PI * 2);
     canvasCtx.fill();
 
-    // Check collision
+    screenShake = 5;
+
+    // Check collision with Targets
     for (let i = targets.length - 1; i >= 0; i--) {
         const t = targets[i];
-        const dist = Math.sqrt(Math.pow(t.x - cursorX, 2) + Math.pow(t.y - cursorY, 2));
-        
-        if (dist < t.radius + 10) { // Hit!
+        const distance = Math.sqrt(Math.pow(t.x - x, 2) + Math.pow(t.y - y, 2));
+
+        if (distance < t.radius + 15) { // Hit!
             targets.splice(i, 1);
             score += 10;
-            scoreElement.innerText = score;
+            // scoreElement.innerText = score; // Handled in updateLivesDisplay
+            updateLivesDisplay();
             playSound('hit');
-            
+
             // Create explosion
-            for(let j=0; j<10; j++){
+            for (let j = 0; j < 10; j++) {
                 particles.push(new Particle(t.x, t.y, t.color));
             }
-            
+
             if (score % 50 === 0) {
                 level++;
                 levelElement.innerText = level;
             }
+        }
+    }
+
+    // Check Powerups
+    for (let i = powerups.length - 1; i >= 0; i--) {
+        const p = powerups[i];
+        const distance = Math.sqrt(Math.pow(p.x - x, 2) + Math.pow(p.y - y, 2));
+        if (distance < p.radius + 15) {
+            powerups.splice(i, 1);
+            if (p.type === 'nuke') nukeScreen();
         }
     }
 }
@@ -246,14 +382,25 @@ function gameLoop() {
 
     // Clear canvas
     canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-    
-    // Draw background (optional sky gradient)
-    // canvasCtx.fillStyle = '#87CEEB';
-    // canvasCtx.fillRect(0,0, canvasElement.width, canvasElement.height);
 
-    // Update and Draw targets
-    if (Math.random() < 0.02 + (level * 0.005)) { // Spawn rate
+    // Screen Shake
+    if (screenShake > 0) {
+        const shakeX = (Math.random() - 0.5) * screenShake;
+        const shakeY = (Math.random() - 0.5) * screenShake;
+        canvasCtx.save();
+        canvasCtx.translate(shakeX, shakeY);
+        screenShake *= 0.9;
+        if (screenShake < 0.5) screenShake = 0;
+    }
+
+    // Spawn Targets
+    if (Math.random() < 0.02 + (level * 0.005)) {
         targets.push(new Target());
+    }
+
+    // Spawn Powerups
+    if (Math.random() < 0.002) { // Rare
+        powerups.push(new PowerUp());
     }
 
     targets.forEach((target, index) => {
@@ -261,9 +408,16 @@ function gameLoop() {
         target.draw();
         if (target.markedForDeletion) {
             targets.splice(index, 1);
+            // logic for escaping handled in update()
         }
     });
-    
+
+    powerups.forEach((p, index) => {
+        p.update();
+        p.draw();
+        if (p.markedForDeletion) powerups.splice(index, 1);
+    });
+
     // Update Particles
     particles.forEach((p, index) => {
         p.update();
@@ -271,11 +425,15 @@ function gameLoop() {
         if (p.life <= 0) particles.splice(index, 1);
     });
 
+    if (screenShake > 0) canvasCtx.restore();
+
     // Handle Hand Tracking
     if (handLandmarks) {
-        // Draw Cursor (Crosshair) at Index Tip (8)
-        const x = handLandmarks[8].x * canvasElement.width;
-        const y = handLandmarks[8].y * canvasElement.height;
+        processInput(handLandmarks);
+
+        // Draw Cursor (Crosshair) at Smoothed Position
+        const x = smoothedX;
+        const y = smoothedY;
 
         // Draw crosshair
         canvasCtx.strokeStyle = '#00FF00';
@@ -286,13 +444,10 @@ function gameLoop() {
         canvasCtx.moveTo(x, y - 20);
         canvasCtx.lineTo(x, y + 20);
         canvasCtx.stroke();
-        
+
         canvasCtx.beginPath();
         canvasCtx.arc(x, y, 15, 0, Math.PI * 2);
         canvasCtx.stroke();
-        
-        // Detect Shot
-        detectShot(handLandmarks);
     }
 
     requestAnimationFrame(gameLoop);
@@ -302,16 +457,19 @@ function startGame() {
     isGameRunning = true;
     score = 0;
     level = 1;
+    lives = 3; // Reset lives
     targets = [];
     particles = [];
-    scoreElement.innerText = score;
+    powerups = [];
+
+    updateLivesDisplay();
     levelElement.innerText = level;
-    
+
     startScreen.classList.add('hidden');
     gameOverScreen.classList.add('hidden');
-    
+
     loadingScreen.classList.remove('hidden');
-    
+
     camera.start()
         .then(() => {
             loadingScreen.classList.add('hidden');
@@ -321,6 +479,12 @@ function startGame() {
             console.error(err);
             alert("Error al acceder a la cámara. Por favor asegúrate de dar permisos.");
         });
+}
+
+function gameOver() {
+    isGameRunning = false;
+    finalScoreElement.innerText = score;
+    gameOverScreen.classList.remove('hidden');
 }
 
 document.getElementById('start-btn').addEventListener('click', startGame);
