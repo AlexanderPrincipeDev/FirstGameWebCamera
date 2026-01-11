@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HandHunt - Caza con tu Mano</title>
+    <link rel="stylesheet" href="style.css">
+    <!-- MediaPipe Hands Dependencies -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js"
+        crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"
+        crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+
+<body>
+    <div id="game-container">
+        <!-- Video element for MediaPipe input (Visible for AR experience) -->
+        <video id="input_video"></video>
+
+        <!-- Game Canvas -->
+        <canvas id="output_canvas"></canvas>
+
+        <!-- UI Overlay -->
+        <div id="ui-layer">
+            <div id="score-board">Puntos: <span id="score">0</span></div>
+            <div id="level-display">Nivel: <span id="level">1</span></div>
+
+            <div id="start-screen" class="screen">
+                <h1>HandHunt</h1>
+                <p>Usa tu dedo índice para apuntar.</p>
+                <p>Haz un gesto de "gatillo" (junta pulgar e índice) para disparar.</p>
+                <button id="start-btn">Iniciar Juego</button>
+            </div>
+
+            <div id="game-over-screen" class="screen hidden">
+                <h2>Game Over</h2>
+                <p>Puntuación Final: <span id="final-score">0</span></p>
+                <button id="restart-btn">Jugar de Nuevo</button>
+            </div>
+
+            <div id="loading" class="hidden">Cargando cámara...</div>
+        </div>
+    </div>
+    <script src="game.js"></script>
+</body>
+
+</html>
