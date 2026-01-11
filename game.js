@@ -249,22 +249,38 @@ function processInput(landmarks) {
     smoothedX = lerp(smoothedX, rawX, SMOOTHING_FACTOR);
     smoothedY = lerp(smoothedY, rawY, SMOOTHING_FACTOR);
 
-    // 2. Detect Shot
-    if (isPistolPose(landmarks)) {
-        if (detectTrigger(landmarks)) {
-            const currentTime = Date.now();
-            if (currentTime - lastShotTime > SHOT_COOLDOWN) {
-                shoot(smoothedX, smoothedY);
-                lastShotTime = currentTime;
-            }
+    // 2. Detect Shot (Ergonomic: Pinch or Fist)
+    const pinchState = getPinchState(landmarks);
+
+    // Visual Feedback: Show pinch strength ring
+    drawPinchRing(smoothedX, smoothedY, pinchState.dist);
+
+    if (pinchState.isPinching || isFist(landmarks)) {
+        const currentTime = Date.now();
+        if (currentTime - lastShotTime > SHOT_COOLDOWN) {
+            shoot(smoothedX, smoothedY);
+            lastShotTime = currentTime;
         }
     }
 }
 
-function isPistolPose(landmarks) {
-    // Check if Middle(12), Ring(16), Pinky(20) are curbed.
-    // Tip y > PIP y (since y increases downwards, but depends on hand orientation).
-    // Better check: Distance from Tip to Wrist(0) < Distance from PIP to Wrist(0)
+function getPinchState(landmarks) {
+    // Thumb Tip (4) vs Index Tip (8)
+    const thumbTip = landmarks[4];
+    const indexTip = landmarks[8];
+    const distance = dist(thumbTip, indexTip);
+
+    // Threshold: touch is usually < 0.05
+    return {
+        isPinching: distance < 0.05,
+        dist: distance // Return distance for visual feedback
+    };
+}
+
+function isFist(landmarks) {
+    // Check if Middle(12), Ring(16), Pinky(20) TIPS are below their PIPs (curled)
+    // AND Index(8) is also curled.
+    // AND Thumb is close to other fingers (optional, but fist usually implies it)
 
     // Wrist
     const wrist = landmarks[0];
@@ -273,30 +289,24 @@ function isPistolPose(landmarks) {
         return dist(landmarks[tipIdx], wrist) < dist(landmarks[pipIdx], wrist);
     }
 
-    // Index should be extended
-    const indexExtended = !isCurled(8, 6);
-
-    // Middle, Ring, Pinky should be curled
-    const middleCurled = isCurled(12, 10);
-    const ringCurled = isCurled(16, 14);
-    const pinkyCurled = isCurled(20, 18);
-
-    return indexExtended && middleCurled && ringCurled && pinkyCurled;
+    // All fingers curled
+    return isCurled(8, 6) && isCurled(12, 10) && isCurled(16, 14) && isCurled(20, 18);
 }
 
-function detectTrigger(landmarks) {
-    // Thumb Tip (4) distance to Index PIP (6) or Middle PIP (10)
-    // When trigger is pulled, Thumb Tip moves closer to Index base/side
-    const thumbTip = landmarks[4];
-    const indexMCP = landmarks[5]; // Knuckle
-    const indexPIP = landmarks[6];
+function drawPinchRing(x, y, pinchDist) {
+    // Draw a ring that shrinks as you pinch
+    // Max radius 50, min radius 10 (when touching)
+    // pinchDist usually 0.0 ~ 0.3
+    const maxDist = 0.2;
+    const normDist = Math.max(0, Math.min(1, pinchDist / maxDist)); // 0 = touching, 1 = open
 
-    // Check distance between thumb tip and index PIP
-    const triggerDist = dist(thumbTip, indexPIP);
+    const radius = 10 + (normDist * 40);
 
-    // Threshold needs tuning. 
-    // Open hand: ~0.15 (normalized). Closed trigger: ~0.05
-    return triggerDist < 0.06;
+    canvasCtx.strokeStyle = `rgba(255, 255, 255, ${1 - normDist})`; // Fades out when open
+    canvasCtx.lineWidth = 2;
+    canvasCtx.beginPath();
+    canvasCtx.arc(x, y, radius, 0, Math.PI * 2);
+    canvasCtx.stroke();
 }
 
 // Helper Functions
